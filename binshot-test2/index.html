@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Bin Shot">
+<title>Bin Shot (test)</title>
+<style>
+  :root { --ink:#1b1410; --paper:#fff6e6; --accent:#e8743b; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
+  html,body { margin:0; height:100%; background:#2a2320; color:var(--paper); font:15px/1.3 system-ui,-apple-system,Roboto,sans-serif; overflow:hidden; overscroll-behavior:none; position:fixed; inset:0; }
+  #stage { position:fixed; inset:0; touch-action:none; }
+  canvas { display:block; width:100%; height:100%; }
+  .hud { position:fixed; left:8px; right:8px; top:calc(8px + env(safe-area-inset-top)); display:flex; gap:6px; flex-wrap:wrap; justify-content:center; pointer-events:none; }
+  .card { background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:12px; padding:6px 10px; font-weight:700; box-shadow:2px 2px 0 var(--ink); }
+  button { font:inherit; font-weight:800; background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:14px; padding:12px 16px; box-shadow:3px 3px 0 var(--ink); }
+  button.on { background:var(--accent); color:#fff; }
+  #result { position:fixed; left:0; right:0; top:40%; text-align:center; font-size:30px; font-weight:900; color:#fff; text-shadow:0 2px 0 #000,0 0 8px #000; pointer-events:none; }
+  .overlay { position:fixed; inset:0; background:rgba(27,20,16,.88); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:24px; text-align:center; z-index:10; }
+  .overlay h1 { margin:0; font-size:40px; letter-spacing:1px; color:var(--paper); text-shadow:3px 3px 0 var(--accent); }
+  .overlay .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; width:min(320px,90vw); }
+  .overlay small { color:#d8c7b5; max-width:320px; }
+  .hidden { display:none !important; }
+  #quit { position:fixed; right:10px; bottom:calc(10px + env(safe-area-inset-bottom)); padding:8px 12px; font-size:13px; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div class="hud">
+  <div class="card" id="hDiff">Easy</div>
+  <div class="card" id="hThrow">Throw 1/10</div>
+  <div class="card" id="hMade">0 in</div>
+  <div class="card" id="hDist">12 ft</div>
+</div>
+<div id="result"></div>
+<button id="quit" class="hidden">Menu</button>
+<div class="overlay" id="menu">
+  <h1>BIN SHOT</h1>
+  <div style="font-weight:700">Swipe the paper ball into the bin. 10 throws a round.</div>
+  <div class="grid">
+    <button data-d="Easy">Easy</button><button data-d="Medium">Medium</button>
+    <button data-d="Hard">Hard</button><button data-d="Expert">Expert</button>
+    <button data-d="Practice" style="grid-column:span 2">Practice (no wind)</button>
+  </div>
+  <small>Test build: shares anonymous gameplay data (throws, scores). No personal info.</small>
+  <small id="best"></small>
+</div>
+<div class="overlay hidden" id="done">
+  <h1 id="score">7 / 10</h1>
+  <div id="doneMsg" style="font-weight:700"></div>
+  <div class="grid"><button class="on" id="again">Play again</button><button id="toMenu">Change level</button></div>
+</div>
+<script>
+"use strict";
+const VERSION = "web-2";
+// telemetry endpoint (Supabase). Filled in when the backend is live; until then throws queue on the device.
+const TELEM = { url:"", key:"" };
+const store = { get(k,d){ try { const v=localStorage.getItem(k); return v?JSON.parse(v):d; } catch(e){ return d; } }, set(k,v){ try { localStorage.setItem(k,JSON.stringify(v)); } catch(e){} } };
+const FT = 0.3048, RIM_Y = 0.40, START = { x:0, y:1.0, z:0.2 }, G = 9.81;
+// final tuned feel (Tristan thumb tests 2026-10-10)
+const P = { ftPerSpeed:7, baseFt:0, curve:1.15, aimGain:0.6, windowMs:150, launchDeg:45, rimIn:16 };
+// v2 (Tristan 2026-10-10): assist is the same on every level; levels get harder through
+// stronger whole-number wind (0-20 mph) and a smaller bin opening.
+const ASSIST = 0.5, ASSIST_WINDOW = 0.12; // rad; only nudges throws already aimed about right
+const LEVELS = {
+  Easy:     { rim:18, dist:[6,14],  mph:[0,5]   },
+  Medium:   { rim:16, dist:[6,18],  mph:[3,10]  },
+  Hard:     { rim:14, dist:[8,20],  mph:[6,15]  },
+  Expert:   { rim:12, dist:[8,22],  mph:[10,20] },
+  Practice: { rim:16, dist:[6,18],  mph:[0,0]   },
+};
+const MPH_TO_AX = 1/12; // m/s^2 per mph (20 mph ~ 33 in of curve on a 15 ft throw)
+function uuid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'x'+Math.random().toString(36).slice(2)+Date.now().toString(36)); }
+const TESTER = store.get("bsw_tester", null) || (()=>{ const id=uuid(); store.set("bsw_tester",id); return id; })();
+const SESSION = uuid();
+let queue = store.get("bsw_queue", []);
+async function flush(){
+  if (!TELEM.url || !queue.length || !navigator.onLine) return;
+  const batch = queue.slice(0,50);
+  try {
+    const r = await fetch(TELEM.url + "/rest/v1/throws", { method:"POST", headers:{ "apikey":TELEM.key, "Authorization":"Bearer "+TELEM.key, "Content-Type":"application/json", "Prefer":"return=minimal" }, body:JSON.stringify(batch) });
+    if (r.ok){ queue = queue.slice(batch.length); store.set("bsw_queue", queue); if(queue.length) flush(); }
+  } catch(e){}
+}
+addEventListener("online", flush); setInterval(flush, 15000);
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W=0,H=0,DPR=1,F=0;
+const CAM = { y:1.35, z:-0.3, pitch:0.30 }; // looking slightly down the room
+function resize(){ DPR=Math.min(window.devicePixelRatio||1,3); W=innerWidth; H=innerHeight; cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); F=Math.min(H*0.9, W*2.2); }
+addEventListener("resize",resize); resize();
+function proj(x,y,z){
+  const dy=y-CAM.y, dz=z-CAM.z, c=Math.cos(CAM.pitch), s=Math.sin(CAM.pitch);
+  const zc = dz*c - dy*s, yc = dz*s + dy*c;
+  if (zc < 0.05) return null;
+  return { x: W/2 + F*x/zc, y: H*0.50 - F*yc/zc, s: F/zc };
+}
+
+
+function launchFor(distM, yaw){ // drag-free: solve speed so the ball comes down through rim height at distM
+  const th = P.launchDeg*Math.PI/180, h = START.y - RIM_Y, c=Math.cos(th), t=Math.tan(th);
+  const denom = 2*c*c*(distM*t + h);
+  const v = Math.sqrt(G*distM*distM/Math.max(denom,1e-4));
+  return { vx: v*c*Math.sin(yaw), vy: v*Math.sin(th), vz: v*c*Math.cos(yaw), v };
+}
+
+
+function line(a,b,w,col){ if(!a||!b) return; ctx.strokeStyle=col; ctx.lineWidth=w; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+function drawFloor(){
+  const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,"#5a4a40"); g.addColorStop(1,"#3a2e28"); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  const hz = proj(0,0,200); ctx.fillStyle="#6d5a4d"; ctx.fillRect(0,hz?hz.y:0,W,H);
+  for (let ft=5; ft<=30; ft+=5){ const a=proj(-3,0,ft*FT), b=proj(3,0,ft*FT); line(a,b,ft%10?1:2,"rgba(255,240,220,.35)");
+    const l=proj(-0.75,0,ft*FT); if(l){ ctx.fillStyle="rgba(255,240,220,.7)"; ctx.font="bold 12px system-ui"; ctx.fillText(ft+" ft", l.x-30, l.y-3); } }
+  for (let x=-3; x<=3; x+=0.6096){ line(proj(x,0,0.2),proj(x,0,30*FT),1,"rgba(0,0,0,.25)"); }
+}
+function ellipse(cx,cy,cz,R,from,to,stroke,fill,w){
+  ctx.beginPath(); let first=true;
+  for(let i=0;i<=40;i++){ const a=from+(to-from)*i/40, p=proj(cx+R*Math.cos(a),cy,cz+R*Math.sin(a)); if(!p) continue; if(first){ctx.moveTo(p.x,p.y); first=false;} else ctx.lineTo(p.x,p.y); }
+  if(fill){ ctx.closePath(); ctx.fillStyle=fill; ctx.fill(); } if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=w||3; ctx.stroke(); }
+}
+function binBack(T,R){ // inside of the bin and its back rim, drawn before the ball
+  ellipse(T.x,RIM_Y,T.z,R,0,2*Math.PI,null,"#1a2a33");
+  // inner back wall shading
+  ctx.save(); ellipse(T.x,RIM_Y,T.z,R,0,2*Math.PI,null,null); ctx.clip();
+  const c=proj(T.x,RIM_Y,T.z); if(c){ const g=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,c.s*R*1.2); g.addColorStop(0,"#0b1216"); g.addColorStop(1,"#3d6577"); ctx.fillStyle=g; ctx.fillRect(c.x-c.s,c.y-c.s,2*c.s,2*c.s); }
+  ctx.restore();
+  ellipse(T.x,RIM_Y,T.z,R,0,Math.PI,"#111",null,4); // far half of rim
+}
+function binFront(T,R,highlight){ // outer wall and near rim, drawn after a ball that is inside
+  const rb=R*0.8, pts=[];
+  for(let i=0;i<=40;i++){ const a=Math.PI+Math.PI*i/40; pts.push(proj(T.x+R*Math.cos(a),RIM_Y,T.z+R*Math.sin(a))); }
+  for(let i=40;i>=0;i--){ const a=Math.PI+Math.PI*i/40; pts.push(proj(T.x+rb*Math.cos(a),0,T.z+rb*Math.sin(a))); }
+  ctx.beginPath(); pts.forEach((p,i)=>p&&(i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y))); ctx.closePath();
+  const l=proj(T.x-R,RIM_Y,T.z), r=proj(T.x+R,RIM_Y,T.z);
+  if(l&&r){ const g=ctx.createLinearGradient(l.x,0,r.x,0); g.addColorStop(0,"#2b6f8f"); g.addColorStop(.35,"#5fb3d6"); g.addColorStop(1,"#1f4f66"); ctx.fillStyle=g; } ctx.fill();
+  ctx.strokeStyle="#111"; ctx.lineWidth=4; ctx.stroke();
+  ellipse(T.x,RIM_Y,T.z,R,Math.PI,2*Math.PI,highlight?"#ffd25a":"#e9f6ff",null,5); // near rim, bright so the hole reads
+  ellipse(T.x,RIM_Y,T.z,R,Math.PI,2*Math.PI,"#111",null,1.5);
+}
+function drawBall(p, r){ const s=proj(p.x,p.y,p.z); if(!s) return; const rad=Math.max(Math.min(s.s*0.045, W*0.075),3);
+  ctx.beginPath(); ctx.arc(s.x,s.y,rad,0,7); ctx.fillStyle="#f4f1ea"; ctx.fill(); ctx.lineWidth=Math.max(1.5,rad*0.18); ctx.strokeStyle="#111"; ctx.stroke();
+  ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(s.x-rad*.5,s.y-rad*.2); ctx.lineTo(s.x+rad*.3,s.y+rad*.4); ctx.moveTo(s.x-rad*.1,s.y-rad*.6); ctx.lineTo(s.x+rad*.5,s.y-rad*.1); ctx.stroke();
+}
+function drawShadow(p){ const s=proj(p.x,0,p.z); if(!s) return; ctx.fillStyle="rgba(0,0,0,.25)"; ctx.beginPath(); ctx.ellipse(s.x,s.y,s.s*0.05,s.s*0.018,0,0,7); ctx.fill(); }
+
+// ---------- game state ----------
+let diff = "Easy", L = LEVELS.Easy, n = 0, made = 0, round = store.get("bsw_round", 0);
+let T = { x:0, z:12*FT }, WIND = 0, MPH = 0, playing = false;
+let samples=[], dragging=false, ball={...START}, flight=null, resultTimer=0;
+const $ = id => document.getElementById(id);
+function rand(a,b){ return a+Math.random()*(b-a); }
+function newBin(){
+  const ft = rand(L.dist[0], L.dist[1]), latMax = Math.min(4, ft*0.22), lat = rand(-latMax, latMax);
+  T = { x:lat*FT, z:Math.sqrt(Math.max(ft*ft-lat*lat,25))*FT + START.z };
+  MPH = Math.round(rand(L.mph[0]-0.49, L.mph[1]+0.49)); MPH = Math.max(L.mph[0], Math.min(L.mph[1], MPH));
+  WIND = MPH ? (Math.random()<.5?-1:1)*MPH*MPH_TO_AX : 0; P.rimIn = L.rim;
+  updateHud();
+}
+function startRound(d){
+  diff=d; L=LEVELS[d]; n=0; made=0; round++; store.set("bsw_round", round);
+  $("menu").classList.add("hidden"); $("done").classList.add("hidden"); $("quit").classList.remove("hidden");
+  playing=true; ball={...START}; flight=null; newBin();
+}
+function endRound(){
+  playing=false; $("quit").classList.add("hidden");
+  const best = store.get("bsw_best", {}); const prev = best[diff]||0; if (made>prev){ best[diff]=made; store.set("bsw_best",best); }
+  $("score").textContent = `${made} / 10`;
+  $("doneMsg").textContent = diff + (made>prev && prev ? " · new best!" : made>prev ? "" : ` · best ${prev}`);
+  $("done").classList.remove("hidden"); flush();
+}
+function showMenu(){ playing=false; $("done").classList.add("hidden"); $("quit").classList.add("hidden"); $("menu").classList.remove("hidden");
+  const b=store.get("bsw_best",{}); const s=Object.keys(b).map(k=>`${k} ${b[k]}`).join(" · "); $("best").textContent = s? "Best: "+s : ""; }
+document.querySelectorAll("#menu button[data-d]").forEach(b=> b.onclick=()=>startRound(b.dataset.d));
+$("again").onclick=()=>startRound(diff); $("toMenu").onclick=showMenu; $("quit").onclick=showMenu;
+function updateHud(){
+  $("hDiff").textContent = diff; $("hThrow").textContent = `Throw ${Math.min(n+1,10)}/10`; $("hMade").textContent = `${made} in`;
+  $("hDist").textContent = `${(Math.hypot(T.x, T.z-START.z)/FT).toFixed(0)} ft`;
+}
+
+// ---------- touch ----------
+const stage=$("stage");
+function ballScreen(){ return proj(ball.x,ball.y,ball.z); }
+stage.addEventListener("pointerdown",e=>{
+  if (!playing || flight) return;
+  const b=ballScreen(); if(!b) return;
+  const r = Math.max(b.s*0.09, 34);
+  if (Math.hypot(e.clientX-b.x, e.clientY-b.y) > r*2) return;
+  dragging=true; samples=[{t:e.timeStamp,x:e.clientX,y:e.clientY}];
+  try{ stage.setPointerCapture(e.pointerId); }catch(_){}
+});
+stage.addEventListener("pointermove",e=>{
+  if(!dragging) return;
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ev of evs) samples.push({t:ev.timeStamp,x:ev.clientX,y:ev.clientY});
+});
+stage.addEventListener("pointerup",e=>{ if(!dragging) return; dragging=false; samples.push({t:e.timeStamp,x:e.clientX,y:e.clientY}); release(); });
+stage.addEventListener("pointercancel",()=>{ dragging=false; samples=[]; });
+document.addEventListener("touchmove", e=>e.preventDefault(), {passive:false});
+
+function release(){
+  if (samples.length<2) return;
+  const tEnd = samples[samples.length-1].t;
+  let end = samples.length-1;
+  while (end>1 && Math.hypot(samples[end].x-samples[end-1].x, samples[end].y-samples[end-1].y) < 1.5 && tEnd - samples[end-1].t < 120) end--;
+  const tE = samples[end].t;
+  const win = samples.filter((s,i)=> i<=end && tE - s.t <= P.windowMs);
+  const w = win.length>=2 ? win : samples.slice(Math.max(0,end-1), end+1);
+  const k=w.length, mt=w.reduce((a,s)=>a+s.t,0)/k, mx=w.reduce((a,s)=>a+s.x,0)/k, my=w.reduce((a,s)=>a+s.y,0)/k;
+  let stt=0,sxt=0,syt=0; for(const s of w){ const dt=s.t-mt; stt+=dt*dt; sxt+=dt*(s.x-mx); syt+=dt*(s.y-my); }
+  const vx = stt>0? sxt/stt : 0, vy = stt>0? syt/stt : 0;
+  const total = Math.hypot(samples[end].x-samples[0].x, samples[end].y-samples[0].y);
+  if (vy > -0.05 || total < 20) { samples=[]; return; }
+  const speed = Math.hypot(vx,vy), swipeAngle = Math.atan2(vx,-vy);
+  let yaw = Math.max(-0.6, Math.min(0.6, swipeAngle*P.aimGain));
+  // the aim that would land in the bin given this wind (assist pulls toward it, so it never fights a player who aims into the wind)
+  const dz0=T.z-START.z, d0=Math.hypot(T.x,dz0), L0=launchFor(d0, 0), tf=d0/Math.hypot(L0.vx,L0.vz);
+  const aimX = T.x - 0.5*WIND*tf*tf, need = Math.atan2(aimX, dz0), aimFt = Math.hypot(aimX, dz0)/FT;
+  if (Math.abs(yaw-need) < ASSIST_WINDOW) yaw += (need-yaw)*ASSIST;
+  let ft = Math.min(Math.max(P.baseFt + P.ftPerSpeed*Math.pow(speed,P.curve), 0), 45); const rawFt = ft;
+  const binFt = Math.hypot(T.x, T.z-START.z)/FT;
+  if (Math.abs(ft-aimFt) < 6) ft += (aimFt-ft)*ASSIST;
+  const Lc = launchFor(ft*FT, yaw);
+  flight = { x:START.x, y:START.y, z:START.z, vx:Lc.vx, vy:Lc.vy, vz:Lc.vz, t:0, trail:[], done:false, inBin:false, gphase:Math.random()*6.28,
+    rec:{ tester_id:TESTER, platform:"web", app_version:VERSION, session_id:SESSION, difficulty:diff, round_no:round, throw_no:n+1, scene_id:null,
+      bin_ft:+binFt.toFixed(2), bin_lat_ft:+(T.x/FT).toFixed(2), wind_ax:+WIND.toFixed(3), wind_mph:MPH*Math.sign(WIND||1), rim_in:P.rimIn, assist:ASSIST, speed_dp_ms:+speed.toFixed(3),
+      swipe_angle_deg:+(swipeAngle*180/Math.PI).toFixed(1), raw_ft:+rawFt.toFixed(2), throw_ft:+ft.toFixed(2), yaw_deg:+(yaw*180/Math.PI).toFixed(1),
+      samples: samples.slice(0,end+1).map(s=>[+(s.t-samples[0].t).toFixed(1),Math.round(s.x),Math.round(s.y)]) } };
+  samples=[];
+}
+
+// ---------- flight ----------
+function windNow(f){ return WIND; }
+function step(dt){
+  const f=flight; if(!f||f.done) return;
+  const R=P.rimIn*0.0254/2, py=f.y;
+  f.vy -= G*dt; f.vx += windNow(f)*dt; f.x+=f.vx*dt; f.y+=f.vy*dt; f.z+=f.vz*dt; f.t+=dt;
+  f.trail.push({x:f.x,y:f.y,z:f.z});
+  if (!f.inBin && py>=RIM_Y && f.y<RIM_Y){
+    const cx=f.x, cz=f.z, d=Math.hypot(cx-T.x, cz-T.z);
+    const hv=Math.hypot(f.vx,f.vz)||1e-6, ux=f.vx/hv, uz=f.vz/hv, ent=Math.atan2(-f.vy,hv);
+    const al=(cx-T.x)*ux+(cz-T.z)*uz, ac=-(cx-T.x)*uz+(cz-T.z)*ux;
+    const frontOk = al > -Math.sqrt(Math.max(R*R-ac*ac,0)) + 0.0445/Math.max(Math.sin(ent),0.05);
+    if (d < R - 0.0445 && frontOk) { f.inBin=true; f.vx*=0.15; f.vz*=0.15; }
+    else if (d < R + 0.045) { f.vx = -f.vx*0.4 + (cx-T.x)*2; f.vz = -f.vz*0.3 + (cz-T.z)*2; f.vy = Math.abs(f.vy)*0.35; f.rimHit=true; }
+  }
+  if (f.inBin){ const dx=f.x-T.x, dz=f.z-T.z, r=Math.hypot(dx,dz), lim=R*0.75; if(r>lim){ f.x=T.x+dx/r*lim; f.z=T.z+dz/r*lim; } if (f.y<0.06){ f.y=0.06; finish(true); } }
+  else if (f.y<0.045){ f.y=0.045; finish(false); }
+  if (f.t>6) finish(false);
+}
+function finish(hit){
+  const f=flight; if(f.done) return; f.done=true;
+  const pt = f.trail.find((p,i,a)=> i>0 && a[i-1].y>=RIM_Y && p.y<RIM_Y) || f.trail[f.trail.length-1];
+  const bx=T.x-START.x, bz=T.z-START.z, bl=Math.hypot(bx,bz), ux=bx/bl, uz=bz/bl;
+  const along=((pt.x-T.x)*ux+(pt.z-T.z)*uz)/FT, across=((pt.x-T.x)*uz-(pt.z-T.z)*ux)/0.0254;
+  const r=f.rec; r.hit=hit; r.rim_hit=!!f.rimHit; r.long_ft=+along.toFixed(2); r.right_in=+across.toFixed(1);
+  queue.push(r); store.set("bsw_queue", queue); flush();
+  if (hit) made++;
+  showResult(hit ? "In!" : (f.rimHit ? "Rim!" : (Math.abs(along)*12 > Math.abs(across) ? (along<0?"Short":"Long") : "Wide")), hit);
+  n++; updateHud();
+  setTimeout(()=>{ flight=null; ball={...START}; if (n>=10) endRound(); else newBin(); }, 1000);
+}
+function showResult(t,ok){ const el=$("result"); el.textContent=t; el.style.color= ok? "#7dff9e":"#fff"; clearTimeout(resultTimer); resultTimer=setTimeout(()=>el.textContent="",1100); }
+
+// ---------- draw ----------
+function drawWind(){
+  if (!WIND || !playing) return;
+  const mph=MPH, dir=Math.sign(WIND), cx=W/2, cy=Math.max(120,H*0.2), Ln=Math.min(W*0.35, 30+Math.abs(WIND)*90);
+  ctx.strokeStyle="#9fe3ff"; ctx.fillStyle="#9fe3ff"; ctx.lineWidth=5; ctx.beginPath(); ctx.moveTo(cx-dir*Ln/2,cy); ctx.lineTo(cx+dir*Ln/2,cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx+dir*Ln/2+dir*12,cy); ctx.lineTo(cx+dir*Ln/2-dir*4,cy-10); ctx.lineTo(cx+dir*Ln/2-dir*4,cy+10); ctx.fill();
+  ctx.font="bold 16px system-ui"; ctx.textAlign="center"; ctx.fillText(`WIND ${mph}`, cx, cy-16); ctx.textAlign="start";
+}
+function draw(){
+  drawFloor();
+  const R=P.rimIn*0.0254/2;
+  const bs=proj(T.x,0,T.z); if(bs){ ctx.fillStyle="rgba(0,0,0,.3)"; ctx.beginPath(); ctx.ellipse(bs.x,bs.y,bs.s*R*1.1,bs.s*R*0.35,0,0,7); ctx.fill(); }
+  const f=flight, b = f? f : ball, behind = b.z > T.z, inside = f && f.inBin;
+  binBack(T,R);
+  if (f && f.trail.length>1){ ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.lineWidth=2; ctx.beginPath(); f.trail.forEach((p,i)=>{ const s=proj(p.x,p.y,p.z); if(s) i?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y); }); ctx.stroke(); }
+  if (inside || behind){ drawShadow(b); drawBall(b); binFront(T,R,inside); } else { binFront(T,R,false); drawShadow(b); drawBall(b); }
+  drawWind();
+  if (dragging && samples.length>1){ ctx.strokeStyle="#ffd25a"; ctx.lineWidth=3; ctx.beginPath(); samples.forEach((s,i)=> i?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y)); ctx.stroke(); }
+}
+let last=performance.now();
+function loop(now){ const dt=Math.min(0.05,(now-last)/1000); last=now; if(flight&&!flight.done){ for(let i=0;i<4;i++) step(dt/4); } draw(); requestAnimationFrame(loop); }
+showMenu(); updateHud(); requestAnimationFrame(loop); flush();
+</script>
+</body>
+</html>
