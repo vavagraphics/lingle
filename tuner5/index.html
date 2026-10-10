@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Bin Shot swipe tuner</title>
+<style>
+  :root { --ink:#1b1410; --paper:#fff6e6; --accent:#e8743b; --ok:#2f9e5b; --bad:#c8463d; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:#2a2320; color:var(--paper); font:14px/1.3 system-ui,-apple-system,Roboto,sans-serif; overflow:hidden; overscroll-behavior:none; }
+  #stage { position:fixed; inset:0; touch-action:none; }
+  canvas { display:block; width:100%; height:100%; }
+  .hud { position:fixed; left:8px; right:8px; top:8px; display:flex; gap:6px; flex-wrap:wrap; pointer-events:none; }
+  .card { background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:12px; padding:6px 10px; font-weight:600; box-shadow:2px 2px 0 var(--ink); }
+  .chips { position:fixed; left:8px; right:8px; top:108px; display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
+  button { font:inherit; font-weight:700; background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:999px; padding:8px 12px; box-shadow:2px 2px 0 var(--ink); }
+  button.on { background:var(--accent); color:#fff; }
+  #result { position:fixed; left:0; right:0; top:42%; text-align:center; font-size:30px; font-weight:900; color:#fff; text-shadow:0 2px 0 #000,0 0 8px #000; pointer-events:none; }
+  #panel { position:fixed; left:0; right:0; bottom:0; max-height:62%; overflow:auto; background:var(--paper); color:var(--ink); border-top:3px solid var(--ink); padding:0 14px 40px; z-index:5; transform:translateY(100%); transition:transform .2s; }
+  #panel.open { transform:none; }
+  .row { margin:10px 0; }
+  .row label { display:flex; justify-content:space-between; font-weight:700; }
+  .row small { color:#6b5a50; display:block; }
+  input[type=range] { width:100%; height:30px; }
+  #log { font:12px/1.35 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div class="hud">
+  <div class="card" id="hTarget">Target</div>
+  <div class="card" id="hStats">0 / 0</div>
+  <div class="card" id="hLast">Swipe the ball</div>
+</div>
+<div id="result"></div>
+<div class="chips" id="chips"></div>
+<div id="panel">
+  <div style="position:sticky;top:0;background:var(--paper);padding:10px 0 6px;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #e4d6c2;z-index:2"><h3 style="margin:0">Adjust the feel</h3><button id="bDone" class="on">Done</button></div>
+  <small>Change one slider at a time, then throw 5 to 10 times. Settings are saved on this phone.</small>
+  <div id="sliders"></div>
+  <div class="btnrow">
+    <button id="bReset">Reset sliders</button>
+    <button id="bClear">Clear throws</button>
+  </div>
+  <h3 style="margin:14px 0 4px">Send to JARVIS</h3>
+  <div class="btnrow">
+    <button id="bShare">Share data file</button>
+    <button id="bCopy">Copy data</button>
+  </div>
+  <div id="log"></div>
+</div>
+<script>
+"use strict";
+// ---------- settings (mirror the game's Range model; defaults = build 1.6.0) ----------
+const DEFAULTS = {
+  ftPerSpeed: 7.5,   // feet added per 1 dp/ms of swipe speed
+  baseFt: 2,         // distance of the slowest flick
+  curve: 1.0,        // 1 = straight line; <1 = more range from soft flicks; >1 = more control on short throws
+  aimGain: 1.0,      // swipe angle -> throw angle
+  windowMs: 80,      // how much of the end of the swipe sets the release speed
+  launchDeg: 46,     // launch elevation
+  rimIn: 12,         // bin opening diameter in inches (real wastebasket ~13 in)
+};
+const SLIDERS = [
+  ["ftPerSpeed","Distance per swipe speed",2,20,0.1,"Higher = the same swipe throws farther."],
+  ["baseFt","Shortest throw (ft)",0,6,0.1,"Where the softest flick lands."],
+  ["curve","Distance curve",0.5,1.8,0.05,"Below 1: soft flicks go farther. Above 1: finer control up close."],
+  ["aimGain","Aim sensitivity",0.4,1.6,0.05,"Lower = a sideways swipe turns the throw less."],
+  ["windowMs","Release window (ms)",30,200,5,"How much of the end of the swipe counts. Short = snappy, long = smooth."],
+  ["launchDeg","Launch angle (deg)",25,65,1,"Higher = loftier arc."],
+  ["rimIn","Bin opening (in)",8,20,0.5,"Size of the hole."],
+];
+const store = { get(k,d){ try { const v=localStorage.getItem(k); return v?JSON.parse(v):d; } catch(e){ return d; } }, set(k,v){ try { localStorage.setItem(k,JSON.stringify(v)); } catch(e){} } };
+let P = Object.assign({}, DEFAULTS, store.get("bs5_tuner_params", {}));
+let throws = store.get("bs5_tuner_throws", []);
+
+// ---------- targets ----------
+const FT = 0.3048;
+const TARGETS = [
+  { key:"short",  label:"Short 8 ft",  x:0,       z:8*FT },
+  { key:"medium", label:"Medium 14 ft",x:0,       z:14*FT },
+  { key:"far",    label:"Far 22 ft",   x:0,       z:22*FT },
+  { key:"left",   label:"Left 14 ft",  x:-4*FT,   z:13.4*FT },
+  { key:"right",  label:"Right 14 ft", x:4*FT,    z:13.4*FT },
+];
+let tIdx = store.get("bs5_tuner_target", 1);
+// ---------- auto test: 5 hidden profiles x 20 throws, blocks in random order, random bins ----------
+const PROFILES = [
+  { id:"A", note:"Tristan baseline", ftPerSpeed:7,   baseFt:0, curve:1.15, aimGain:0.7, windowMs:150, launchDeg:25 },
+  { id:"B", note:"sim best",         ftPerSpeed:10,  baseFt:0, curve:0.6,  aimGain:0.6, windowMs:150, launchDeg:45 },
+  { id:"C", note:"in between",       ftPerSpeed:8.5, baseFt:0, curve:0.85, aimGain:0.6, windowMs:150, launchDeg:40 },
+  { id:"D", note:"sim, loftier",     ftPerSpeed:10,  baseFt:0, curve:0.6,  aimGain:0.5, windowMs:150, launchDeg:55 },
+  { id:"E", note:"baseline + loft",  ftPerSpeed:7,   baseFt:0, curve:1.15, aimGain:0.7, windowMs:150, launchDeg:45 },
+];
+const BLOCK=20, WARMUP=5, TEST_RIM=16;
+let test = store.get("bs5_tuner_test", null); // {order:[..], n:0, session:id}
+let savedP = null;
+function testProfile(){ return test ? PROFILES.find(p=>p.id===test.order[Math.floor(test.n/BLOCK)]) : null; }
+function applyTest(){
+  if(!test) return;
+  if(!savedP) savedP = {...P};
+  P = {...P, ...testProfile(), rimIn:TEST_RIM};
+  const ft = 6 + Math.random()*19, latMax = Math.min(4, ft*0.22), lat = (Math.random()*2-1)*latMax;
+  const z = Math.sqrt(Math.max(ft*ft-lat*lat, 25))*FT;
+  TARGETS[5] = { key:"test", label:`Test ${test.n+1}/100 · ${ft.toFixed(0)} ft`, x:lat*FT, z };
+  tIdx = 5;
+}
+function startTest(){
+  const ids = PROFILES.map(p=>p.id).sort(()=>Math.random()-0.5);
+  test = { order:ids, n:0, session:new Date().toISOString() }; store.set("bs5_tuner_test", test);
+  randomMode=false; applyTest(); buildChips();
+  showResult("New feel. 5 warm-up throws.", true);
+}
+function stopTest(){ test=null; store.set("bs5_tuner_test", null); if(savedP){ P=savedP; savedP=null; } TARGETS.length=5; tIdx=1; buildChips(); }
+function testReport(){
+  const sess = throws.filter(t=>t.test && test0 && t.test.session===test0);
+  return sess;
+}
+let test0 = test ? test.session : null;
+let randomMode = false;
+const RIM_Y = 0.40;               // rim height (m), ~16 in bin
+const START = { x:0, y:1.0, z:0.2 }; // hand, low in the frame like the game
+const G = 9.81;
+
+// ---------- camera ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W=0,H=0,DPR=1,F=0;
+const CAM = { y:1.35, z:-0.3, pitch:0.30 }; // looking slightly down the room
+function resize(){ DPR=Math.min(window.devicePixelRatio||1,3); W=innerWidth; H=innerHeight; cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); F=Math.min(H*0.9, W*2.2); }
+addEventListener("resize",resize); resize();
+function proj(x,y,z){
+  const dy=y-CAM.y, dz=z-CAM.z, c=Math.cos(CAM.pitch), s=Math.sin(CAM.pitch);
+  const zc = dz*c - dy*s, yc = dz*s + dy*c;
+  if (zc < 0.05) return null;
+  return { x: W/2 + F*x/zc, y: H*0.50 - F*yc/zc, s: F/zc };
+}
+
+// ---------- range model ----------
+function feetFor(speed){ // speed in dp/ms (CSS px per ms)
+  const ft = P.baseFt + P.ftPerSpeed * Math.pow(Math.max(speed,0), P.curve);
+  return Math.min(Math.max(ft, P.baseFt), 45);
+}
+function launchFor(distM, yaw){ // drag-free: solve speed so the ball comes down through rim height at distM
+  const th = P.launchDeg*Math.PI/180, h = START.y - RIM_Y, c=Math.cos(th), t=Math.tan(th);
+  const denom = 2*c*c*(distM*t + h);
+  const v = Math.sqrt(G*distM*distM/Math.max(denom,1e-4));
+  return { vx: v*c*Math.sin(yaw), vy: v*Math.sin(th), vz: v*c*Math.cos(yaw), v };
+}
+
+// ---------- touch capture ----------
+let samples=[], dragging=false, ball={...START}, flight=null, resultTimer=0;
+const stage=document.getElementById("stage");
+function ballScreen(){ return proj(ball.x,ball.y,ball.z); }
+stage.addEventListener("pointerdown",e=>{
+  if (flight || document.getElementById("panel").classList.contains("open")) return;
+  const b=ballScreen(); if(!b) return;
+  const r = Math.max(b.s*0.09, 34);
+  if (Math.hypot(e.clientX-b.x, e.clientY-b.y) > r*1.8) return;
+  dragging=true; samples=[{t:e.timeStamp,x:e.clientX,y:e.clientY}];
+  stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove",e=>{
+  if(!dragging) return;
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ev of evs) samples.push({t:ev.timeStamp,x:ev.clientX,y:ev.clientY});
+});
+stage.addEventListener("pointerup",e=>{
+  if(!dragging) return; dragging=false;
+  samples.push({t:e.timeStamp,x:e.clientX,y:e.clientY});
+  release();
+});
+stage.addEventListener("pointercancel",()=>{ dragging=false; samples=[]; });
+
+function release(){
+  if (samples.length<2) return;
+  const tEnd = samples[samples.length-1].t;
+  // drop a pause before lift: trim trailing samples that barely moved
+  let end = samples.length-1;
+  while (end>1 && Math.hypot(samples[end].x-samples[end-1].x, samples[end].y-samples[end-1].y) < 1.5 && tEnd - samples[end-1].t < 120) end--;
+  const tE = samples[end].t;
+  const win = samples.filter((s,i)=> i<=end && tE - s.t <= P.windowMs);
+  const w = win.length>=2 ? win : samples.slice(Math.max(0,end-1), end+1);
+  // least-squares velocity over the window
+  const n=w.length, mt=w.reduce((a,s)=>a+s.t,0)/n, mx=w.reduce((a,s)=>a+s.x,0)/n, my=w.reduce((a,s)=>a+s.y,0)/n;
+  let stt=0,sxt=0,syt=0; for(const s of w){ const dt=s.t-mt; stt+=dt*dt; sxt+=dt*(s.x-mx); syt+=dt*(s.y-my); }
+  const vx = stt>0? sxt/stt : 0, vy = stt>0? syt/stt : 0; // px per ms
+  const total = Math.hypot(samples[end].x-samples[0].x, samples[end].y-samples[0].y);
+  if (vy > -0.05 || total < 20) { samples=[]; return; } // not an upward flick
+  const speed = Math.hypot(vx,vy);
+  const swipeAngle = Math.atan2(vx,-vy);
+  const yaw = Math.max(-0.6, Math.min(0.6, swipeAngle*P.aimGain));
+  const ft = feetFor(speed);
+  const L = launchFor(ft*FT, yaw);
+  flight = { x:START.x, y:START.y, z:START.z, vx:L.vx, vy:L.vy, vz:L.vz, t:0, trail:[], done:false, inBin:false,
+             rec:{ ts:new Date().toISOString(), target:TARGETS[tIdx].key, targetFt:+(Math.hypot(TARGETS[tIdx].x,TARGETS[tIdx].z)/FT).toFixed(2),
+                   speedDpMs:+speed.toFixed(3), swipeAngleDeg:+(swipeAngle*180/Math.PI).toFixed(1), yawDeg:+(yaw*180/Math.PI).toFixed(1),
+                   throwFt:+ft.toFixed(2), swipeLenPx:+total.toFixed(0), swipeMs:+(tE-samples[0].t).toFixed(0), windowSamples:w.length,
+                   params:{...P}, screen:{w:W,h:H,dpr:DPR}, samples:samples.map(s=>[+(s.t-samples[0].t).toFixed(1),Math.round(s.x),Math.round(s.y)]) } };
+  samples=[];
+}
+
+// ---------- flight + scoring ----------
+function step(dt){
+  const f=flight; if(!f||f.done) return;
+  const T=TARGETS[tIdx], R=P.rimIn*0.0254/2;
+  const py=f.y;
+  f.vy -= G*dt; f.x+=f.vx*dt; f.y+=f.vy*dt; f.z+=f.vz*dt; f.t+=dt;
+  f.trail.push({x:f.x,y:f.y,z:f.z});
+  if (!f.inBin && py>=RIM_Y && f.y<RIM_Y){
+    const k=(py-RIM_Y)/(py-f.y), cx=f.x, cz=f.z;
+    const d=Math.hypot(cx-T.x, cz-T.z);
+    // front-rim clearance at the ball's entry angle (a flat ball clips the near rim)
+    const hv=Math.hypot(f.vx,f.vz)||1e-6, ux=f.vx/hv, uz=f.vz/hv, ent=Math.atan2(-f.vy,hv);
+    const al=(cx-T.x)*ux+(cz-T.z)*uz, ac=-(cx-T.x)*uz+(cz-T.z)*ux;
+    const frontOk = al > -Math.sqrt(Math.max(R*R-ac*ac,0)) + 0.0445/Math.max(Math.sin(ent),0.05);
+    f.entryDeg = ent*180/Math.PI;
+    if (d < R - 0.0445 && frontOk) { f.inBin=true; f.vx*=0.15; f.vz*=0.15; }
+    else if (d < R + 0.045) { f.vx = -f.vx*0.4 + (cx-T.x)*2; f.vz = -f.vz*0.3 + (cz-T.z)*2; f.vy = Math.abs(f.vy)*0.35; f.rimHit=true; }
+  }
+  if (f.inBin){ // settle inside: clamp within the walls
+    const dx=f.x-T.x, dz=f.z-T.z, r=Math.hypot(dx,dz), lim=R*0.75; if(r>lim){ f.x=T.x+dx/r*lim; f.z=T.z+dz/r*lim; }
+    if (f.y<0.06){ f.y=0.06; finish(true); }
+  } else if (f.y<0.045){ f.y=0.045; finish(false); }
+  if (f.t>6) finish(false);
+}
+function finish(hit){
+  const f=flight; if(f.done) return; f.done=true;
+  const T=TARGETS[tIdx];
+  // landing measured where the ball crossed rim height (or the floor), relative to the bin, along/across the throw line
+  const pt = f.trail.reduce((best,p,i,a)=> (i>0 && a[i-1].y>=RIM_Y && p.y<RIM_Y && !best) ? p : best, null) || f.trail[f.trail.length-1];
+  const ux = T.x/Math.hypot(T.x,T.z), uz = T.z/Math.hypot(T.x,T.z);
+  const along = ((pt.x-T.x)*ux + (pt.z-T.z)*uz)/FT;  // + = long
+  const across = ((pt.x-T.x)*uz - (pt.z-T.z)*ux)/0.0254; // + = right (inches)
+  const r=f.rec; r.hit=hit; r.rimHit=!!f.rimHit; r.longFt=+along.toFixed(2); r.rightIn=+across.toFixed(1);
+  r.entryDeg = f.entryDeg!=null ? +f.entryDeg.toFixed(1) : null;
+  if (test){ r.test = { session:test.session, profile:testProfile().id, n:test.n, inBlock:test.n%BLOCK, warmup:(test.n%BLOCK)<WARMUP, targetLatFt:+(T.x/FT).toFixed(2) }; }
+  throws.push(r); store.set("bs5_tuner_throws", throws);
+  const msg = hit ? "In!" : (Math.abs(along)*12 > Math.abs(across) ? (along<0? `Short ${(-along).toFixed(1)} ft`:`Long ${along.toFixed(1)} ft`) : (across<0? `Wide left ${(-across).toFixed(0)} in`:`Wide right ${across.toFixed(0)} in`));
+  showResult(msg, hit); updateHud(r);
+  setTimeout(()=>{ flight=null; ball={...START};
+    if (test){ test.n++; store.set("bs5_tuner_test",test); test0=test.session;
+      if (test.n>=PROFILES.length*BLOCK){ const done=test; stopTest(); test0=done.session; showResults(done); }
+      else { const newBlock = test.n%BLOCK===0; applyTest(); buildChips(); if(newBlock) showResult("New feel. 5 warm-up throws.", true); } }
+    else if(randomMode){ tIdx=Math.floor(Math.random()*5); buildChips(); } }, 900);
+}
+function showResult(t,ok){ const el=document.getElementById("result"); el.textContent=t; el.style.color= ok? "#7dff9e":"#fff"; clearTimeout(resultTimer); resultTimer=setTimeout(()=>el.textContent="",1200); }
+
+// ---------- drawing ----------
+function line(a,b,w,col){ if(!a||!b) return; ctx.strokeStyle=col; ctx.lineWidth=w; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+function drawFloor(){
+  const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,"#5a4a40"); g.addColorStop(1,"#3a2e28"); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  const hz = proj(0,0,200); ctx.fillStyle="#6d5a4d"; ctx.fillRect(0,hz?hz.y:0,W,H);
+  for (let ft=5; ft<=30; ft+=5){ const a=proj(-3,0,ft*FT), b=proj(3,0,ft*FT); line(a,b,ft%10?1:2,"rgba(255,240,220,.35)");
+    const l=proj(-0.75,0,ft*FT); if(l){ ctx.fillStyle="rgba(255,240,220,.7)"; ctx.font="bold 12px system-ui"; ctx.fillText(ft+" ft", l.x-30, l.y-3); } }
+  for (let x=-3; x<=3; x+=0.6096){ line(proj(x,0,0.2),proj(x,0,30*FT),1,"rgba(0,0,0,.25)"); }
+}
+function ellipse(cx,cy,cz,R,from,to,stroke,fill,w){
+  ctx.beginPath(); let first=true;
+  for(let i=0;i<=40;i++){ const a=from+(to-from)*i/40, p=proj(cx+R*Math.cos(a),cy,cz+R*Math.sin(a)); if(!p) continue; if(first){ctx.moveTo(p.x,p.y); first=false;} else ctx.lineTo(p.x,p.y); }
+  if(fill){ ctx.closePath(); ctx.fillStyle=fill; ctx.fill(); } if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=w||3; ctx.stroke(); }
+}
+function binBack(T,R){ // inside of the bin and its back rim, drawn before the ball
+  ellipse(T.x,RIM_Y,T.z,R,0,2*Math.PI,null,"#1a2a33");
+  // inner back wall shading
+  ctx.save(); ellipse(T.x,RIM_Y,T.z,R,0,2*Math.PI,null,null); ctx.clip();
+  const c=proj(T.x,RIM_Y,T.z); if(c){ const g=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,c.s*R*1.2); g.addColorStop(0,"#0b1216"); g.addColorStop(1,"#3d6577"); ctx.fillStyle=g; ctx.fillRect(c.x-c.s,c.y-c.s,2*c.s,2*c.s); }
+  ctx.restore();
+  ellipse(T.x,RIM_Y,T.z,R,0,Math.PI,"#111",null,4); // far half of rim
+}
+function binFront(T,R,highlight){ // outer wall and near rim, drawn after a ball that is inside
+  const rb=R*0.8, pts=[];
+  for(let i=0;i<=40;i++){ const a=Math.PI+Math.PI*i/40; pts.push(proj(T.x+R*Math.cos(a),RIM_Y,T.z+R*Math.sin(a))); }
+  for(let i=40;i>=0;i--){ const a=Math.PI+Math.PI*i/40; pts.push(proj(T.x+rb*Math.cos(a),0,T.z+rb*Math.sin(a))); }
+  ctx.beginPath(); pts.forEach((p,i)=>p&&(i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y))); ctx.closePath();
+  const l=proj(T.x-R,RIM_Y,T.z), r=proj(T.x+R,RIM_Y,T.z);
+  if(l&&r){ const g=ctx.createLinearGradient(l.x,0,r.x,0); g.addColorStop(0,"#2b6f8f"); g.addColorStop(.35,"#5fb3d6"); g.addColorStop(1,"#1f4f66"); ctx.fillStyle=g; } ctx.fill();
+  ctx.strokeStyle="#111"; ctx.lineWidth=4; ctx.stroke();
+  ellipse(T.x,RIM_Y,T.z,R,Math.PI,2*Math.PI,highlight?"#ffd25a":"#e9f6ff",null,5); // near rim, bright so the hole reads
+  ellipse(T.x,RIM_Y,T.z,R,Math.PI,2*Math.PI,"#111",null,1.5);
+}
+function drawBall(p, r){ const s=proj(p.x,p.y,p.z); if(!s) return; const rad=Math.max(Math.min(s.s*0.045, W*0.075),3);
+  ctx.beginPath(); ctx.arc(s.x,s.y,rad,0,7); ctx.fillStyle="#f4f1ea"; ctx.fill(); ctx.lineWidth=Math.max(1.5,rad*0.18); ctx.strokeStyle="#111"; ctx.stroke();
+  ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(s.x-rad*.5,s.y-rad*.2); ctx.lineTo(s.x+rad*.3,s.y+rad*.4); ctx.moveTo(s.x-rad*.1,s.y-rad*.6); ctx.lineTo(s.x+rad*.5,s.y-rad*.1); ctx.stroke();
+}
+function drawShadow(p){ const s=proj(p.x,0,p.z); if(!s) return; ctx.fillStyle="rgba(0,0,0,.25)"; ctx.beginPath(); ctx.ellipse(s.x,s.y,s.s*0.05,s.s*0.018,0,0,7); ctx.fill(); }
+function draw(){
+  drawFloor();
+  const T=TARGETS[tIdx], R=P.rimIn*0.0254/2;
+  // bin shadow + back
+  const bs=proj(T.x,0,T.z); if(bs){ ctx.fillStyle="rgba(0,0,0,.3)"; ctx.beginPath(); ctx.ellipse(bs.x,bs.y,bs.s*R*1.1,bs.s*R*0.35,0,0,7); ctx.fill(); }
+  const f=flight, b = f? f : ball;
+  const behind = b.z > T.z; // ball farther than the bin's center
+  const inside = f && f.inBin;
+  binBack(T,R);
+  if (f && f.trail.length>1){ ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.lineWidth=2; ctx.beginPath(); f.trail.forEach((p,i)=>{ const s=proj(p.x,p.y,p.z); if(s) i?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y); }); ctx.stroke(); }
+  if (inside || behind){ drawShadow(b); drawBall(b); binFront(T,R,inside); }
+  else { binFront(T,R,false); drawShadow(b); drawBall(b); }
+  // live swipe trace
+  if (dragging && samples.length>1){ ctx.strokeStyle="#ffd25a"; ctx.lineWidth=3; ctx.beginPath(); samples.forEach((s,i)=> i?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y)); ctx.stroke(); }
+}
+let last=performance.now();
+function loop(now){ let dt=Math.min(0.05,(now-last)/1000); last=now; if(flight&&!flight.done){ const n=4; for(let i=0;i<n;i++) step(dt/n); } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+// ---------- UI ----------
+function updateHud(r){
+  const T=TARGETS[tIdx]; document.getElementById("hTarget").textContent = T.label;
+  const mine=throws.filter(t=>t.target===T.key), hits=mine.filter(t=>t.hit).length;
+  if (test){ const b=Math.floor(test.n/BLOCK)+1, i=test.n%BLOCK; document.getElementById("hStats").textContent = `Feel ${b}/5 · ${i<WARMUP?"warm-up":"counts"}`; }
+  else document.getElementById("hStats").textContent = `${hits} / ${mine.length} in`;
+  if(r) document.getElementById("hLast").textContent = `${r.speedDpMs.toFixed(2)} speed · ${r.throwFt.toFixed(1)} ft · ${r.swipeAngleDeg>0?"+":""}${r.swipeAngleDeg}°`;
+  document.getElementById("log").textContent = summary();
+}
+function summary(){
+  const out=[]; for(const T of TARGETS){ const m=throws.filter(t=>t.target===T.key); if(!m.length) continue;
+    const h=m.filter(t=>t.hit).length, avgLong=m.reduce((a,t)=>a+t.longFt,0)/m.length, sdLong=Math.sqrt(m.reduce((a,t)=>a+(t.longFt-avgLong)**2,0)/m.length), avgRight=m.reduce((a,t)=>a+t.rightIn,0)/m.length;
+    out.push(`${T.label.padEnd(13)} ${h}/${m.length} in  long ${avgLong>=0?"+":""}${avgLong.toFixed(1)} ft ±${sdLong.toFixed(1)}  right ${avgRight>=0?"+":""}${avgRight.toFixed(0)} in`); }
+  return out.length? out.join("\n") : "No throws yet.";
+}
+function buildChips(){
+  const el=document.getElementById("chips"); el.innerHTML="";
+  if (test){ const s=document.createElement("button"); s.textContent="Stop test"; s.onclick=()=>{ if(confirm("Stop the auto test? Throws so far are kept.")) stopTest(); }; el.appendChild(s); updateHud(); return; }
+  const at=document.createElement("button"); at.textContent="Auto test (100)"; at.className="on"; at.onclick=startTest; el.appendChild(at);
+  TARGETS.slice(0,5).forEach((T,i)=>{ const b=document.createElement("button"); b.textContent=T.label.replace(" ft","′"); if(i===tIdx&&!randomMode) b.className="on"; b.onclick=()=>{ randomMode=false; tIdx=i; store.set("bs5_tuner_target",i); buildChips(); updateHud(); }; el.appendChild(b); });
+  const rnd=document.createElement("button"); rnd.textContent="Random"; if(randomMode) rnd.className="on"; rnd.onclick=()=>{ randomMode=!randomMode; buildChips(); }; el.appendChild(rnd);
+  const st=document.createElement("button"); st.textContent="Settings"; st.onclick=()=>document.getElementById("panel").classList.toggle("open"); el.appendChild(st);
+  updateHud();
+}
+function buildSliders(){
+  const box=document.getElementById("sliders"); box.innerHTML="";
+  for(const [k,label,min,max,stepv,help] of SLIDERS){
+    const row=document.createElement("div"); row.className="row";
+    row.innerHTML=`<label><span>${label}</span><span id="v_${k}">${P[k]}</span></label><input type="range" min="${min}" max="${max}" step="${stepv}" value="${P[k]}"><small>${help}</small>`;
+    row.querySelector("input").oninput=e=>{ P[k]=+e.target.value; document.getElementById("v_"+k).textContent=P[k]; store.set("bs5_tuner_params",P); };
+    box.appendChild(row);
+  }
+}
+function payload(){ return JSON.stringify({ tool:"binshot-swipe-tuner", version:1, exported:new Date().toISOString(), ua:navigator.userAgent, currentParams:P, defaults:DEFAULTS, throws }, null, 1); }
+document.getElementById("bReset").onclick=()=>{ P={...DEFAULTS}; store.set("bs5_tuner_params",P); buildSliders(); };
+document.getElementById("bClear").onclick=()=>{ if(confirm("Clear all recorded throws?")){ throws=[]; store.set("bs5_tuner_throws",throws); updateHud(); } };
+document.getElementById("bCopy").onclick=async()=>{ try{ await navigator.clipboard.writeText(payload()); alert("Copied. Paste it to JARVIS."); }catch(e){ alert("Copy failed. Use Share instead."); } };
+document.getElementById("bShare").onclick=async()=>{
+  const name=`binshot-tuner-${new Date().toISOString().slice(0,16).replace(/[:T]/g,"-")}.json`;
+  const file=new File([payload()], name, {type:"application/json"});
+  if (navigator.canShare && navigator.canShare({files:[file]})) { try{ await navigator.share({files:[file], title:"Bin Shot tuner data"}); return; }catch(e){ if(e.name==="AbortError") return; } }
+  const a=document.createElement("a"); a.href=URL.createObjectURL(file); a.download=name; a.click();
+};
+document.getElementById("bDone").onclick=closePanel;
+function closePanel(){ document.getElementById("panel").classList.remove("open"); }
+// tapping the scene above the panel closes it
+stage.addEventListener("pointerdown",()=>{ const pn=document.getElementById("panel"); if(pn.classList.contains("open")) closePanel(); }, true);
+function showResults(done){
+  const sess = throws.filter(t=>t.test && t.test.session===done.session && !t.test.warmup);
+  const rows = PROFILES.map(p=>{ const m=sess.filter(t=>t.test.profile===p.id); const h=m.filter(t=>t.hit).length;
+    const ml = m.length? m.reduce((a,t)=>a+Math.abs(t.longFt),0)/m.length : 0; return {p, n:m.length, h, ml}; }).sort((a,b)=>b.h-a.h||a.ml-b.ml);
+  const lines = rows.map((r,i)=>`${i+1}. Feel ${r.p.id}: ${r.h}/${r.n} in · avg distance miss ${r.ml.toFixed(1)} ft`);
+  document.getElementById("log").textContent = "AUTO TEST DONE (warm-ups excluded)\n"+lines.join("\n")+"\n\nTap Share data file and send it to JARVIS.";
+  document.getElementById("panel").classList.add("open");
+}
+if (test){ applyTest(); }
+buildChips(); buildSliders(); updateHud();
+</script>
+</body>
+</html>
