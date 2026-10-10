@@ -12,7 +12,7 @@
   canvas { display:block; width:100%; height:100%; }
   .hud { position:fixed; left:8px; right:8px; top:8px; display:flex; gap:6px; flex-wrap:wrap; pointer-events:none; }
   .card { background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:12px; padding:6px 10px; font-weight:600; box-shadow:2px 2px 0 var(--ink); }
-  .chips { position:fixed; left:8px; right:8px; top:56px; display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
+  .chips { position:fixed; left:8px; right:8px; top:108px; display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
   button { font:inherit; font-weight:700; background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:999px; padding:8px 12px; box-shadow:2px 2px 0 var(--ink); }
   button.on { background:var(--accent); color:#fff; }
   #result { position:fixed; left:0; right:0; top:42%; text-align:center; font-size:30px; font-weight:900; color:#fff; text-shadow:0 2px 0 #000,0 0 8px #000; pointer-events:none; }
@@ -85,6 +85,39 @@ const TARGETS = [
   { key:"right",  label:"Right 14 ft", x:4*FT,    z:13.4*FT },
 ];
 let tIdx = store.get("bs_tuner_target", 1);
+// ---------- auto test: 5 hidden profiles x 20 throws, blocks in random order, random bins ----------
+const PROFILES = [
+  { id:"A", note:"Tristan baseline", ftPerSpeed:7,   baseFt:0, curve:1.15, aimGain:0.7, windowMs:150, launchDeg:25 },
+  { id:"B", note:"sim best",         ftPerSpeed:10,  baseFt:0, curve:0.6,  aimGain:0.6, windowMs:150, launchDeg:45 },
+  { id:"C", note:"in between",       ftPerSpeed:8.5, baseFt:0, curve:0.85, aimGain:0.6, windowMs:150, launchDeg:40 },
+  { id:"D", note:"sim, loftier",     ftPerSpeed:10,  baseFt:0, curve:0.6,  aimGain:0.5, windowMs:150, launchDeg:55 },
+  { id:"E", note:"baseline + loft",  ftPerSpeed:7,   baseFt:0, curve:1.15, aimGain:0.7, windowMs:150, launchDeg:45 },
+];
+const BLOCK=20, WARMUP=5, TEST_RIM=16;
+let test = store.get("bs_tuner_test", null); // {order:[..], n:0, session:id}
+let savedP = null;
+function testProfile(){ return test ? PROFILES.find(p=>p.id===test.order[Math.floor(test.n/BLOCK)]) : null; }
+function applyTest(){
+  if(!test) return;
+  if(!savedP) savedP = {...P};
+  P = {...P, ...testProfile(), rimIn:TEST_RIM};
+  const ft = 6 + Math.random()*19, latMax = Math.min(4, ft*0.22), lat = (Math.random()*2-1)*latMax;
+  const z = Math.sqrt(Math.max(ft*ft-lat*lat, 25))*FT;
+  TARGETS[5] = { key:"test", label:`Test ${test.n+1}/100 · ${ft.toFixed(0)} ft`, x:lat*FT, z };
+  tIdx = 5;
+}
+function startTest(){
+  const ids = PROFILES.map(p=>p.id).sort(()=>Math.random()-0.5);
+  test = { order:ids, n:0, session:new Date().toISOString() }; store.set("bs_tuner_test", test);
+  randomMode=false; applyTest(); buildChips();
+  showResult("New feel. 5 warm-up throws.", true);
+}
+function stopTest(){ test=null; store.set("bs_tuner_test", null); if(savedP){ P=savedP; savedP=null; } TARGETS.length=5; tIdx=1; buildChips(); }
+function testReport(){
+  const sess = throws.filter(t=>t.test && test0 && t.test.session===test0);
+  return sess;
+}
+let test0 = test ? test.session : null;
 let randomMode = false;
 const RIM_Y = 0.40;               // rim height (m), ~16 in bin
 const START = { x:0, y:1.0, z:0.2 }; // hand, low in the frame like the game
@@ -177,7 +210,12 @@ function step(dt){
   if (!f.inBin && py>=RIM_Y && f.y<RIM_Y){
     const k=(py-RIM_Y)/(py-f.y), cx=f.x, cz=f.z;
     const d=Math.hypot(cx-T.x, cz-T.z);
-    if (d < R - 0.045*0.6) { f.inBin=true; f.vx*=0.15; f.vz*=0.15; }
+    // front-rim clearance at the ball's entry angle (a flat ball clips the near rim)
+    const hv=Math.hypot(f.vx,f.vz)||1e-6, ux=f.vx/hv, uz=f.vz/hv, ent=Math.atan2(-f.vy,hv);
+    const al=(cx-T.x)*ux+(cz-T.z)*uz, ac=-(cx-T.x)*uz+(cz-T.z)*ux;
+    const frontOk = al > -Math.sqrt(Math.max(R*R-ac*ac,0)) + 0.0445/Math.max(Math.sin(ent),0.05);
+    f.entryDeg = ent*180/Math.PI;
+    if (d < R - 0.0445 && frontOk) { f.inBin=true; f.vx*=0.15; f.vz*=0.15; }
     else if (d < R + 0.045) { f.vx = -f.vx*0.4 + (cx-T.x)*2; f.vz = -f.vz*0.3 + (cz-T.z)*2; f.vy = Math.abs(f.vy)*0.35; f.rimHit=true; }
   }
   if (f.inBin){ // settle inside: clamp within the walls
@@ -195,10 +233,16 @@ function finish(hit){
   const along = ((pt.x-T.x)*ux + (pt.z-T.z)*uz)/FT;  // + = long
   const across = ((pt.x-T.x)*uz - (pt.z-T.z)*ux)/0.0254; // + = right (inches)
   const r=f.rec; r.hit=hit; r.rimHit=!!f.rimHit; r.longFt=+along.toFixed(2); r.rightIn=+across.toFixed(1);
+  r.entryDeg = f.entryDeg!=null ? +f.entryDeg.toFixed(1) : null;
+  if (test){ r.test = { session:test.session, profile:testProfile().id, n:test.n, inBlock:test.n%BLOCK, warmup:(test.n%BLOCK)<WARMUP, targetLatFt:+(T.x/FT).toFixed(2) }; }
   throws.push(r); store.set("bs_tuner_throws", throws);
   const msg = hit ? "In!" : (Math.abs(along)*12 > Math.abs(across) ? (along<0? `Short ${(-along).toFixed(1)} ft`:`Long ${along.toFixed(1)} ft`) : (across<0? `Wide left ${(-across).toFixed(0)} in`:`Wide right ${across.toFixed(0)} in`));
   showResult(msg, hit); updateHud(r);
-  setTimeout(()=>{ flight=null; ball={...START}; if(randomMode){ tIdx=Math.floor(Math.random()*TARGETS.length); buildChips(); } }, 900);
+  setTimeout(()=>{ flight=null; ball={...START};
+    if (test){ test.n++; store.set("bs_tuner_test",test); test0=test.session;
+      if (test.n>=PROFILES.length*BLOCK){ const done=test; stopTest(); test0=done.session; showResults(done); }
+      else { const newBlock = test.n%BLOCK===0; applyTest(); buildChips(); if(newBlock) showResult("New feel. 5 warm-up throws.", true); } }
+    else if(randomMode){ tIdx=Math.floor(Math.random()*5); buildChips(); } }, 900);
 }
 function showResult(t,ok){ const el=document.getElementById("result"); el.textContent=t; el.style.color= ok? "#7dff9e":"#fff"; clearTimeout(resultTimer); resultTimer=setTimeout(()=>el.textContent="",1200); }
 
@@ -263,7 +307,8 @@ requestAnimationFrame(loop);
 function updateHud(r){
   const T=TARGETS[tIdx]; document.getElementById("hTarget").textContent = T.label;
   const mine=throws.filter(t=>t.target===T.key), hits=mine.filter(t=>t.hit).length;
-  document.getElementById("hStats").textContent = `${hits} / ${mine.length} in`;
+  if (test){ const b=Math.floor(test.n/BLOCK)+1, i=test.n%BLOCK; document.getElementById("hStats").textContent = `Feel ${b}/5 · ${i<WARMUP?"warm-up":"counts"}`; }
+  else document.getElementById("hStats").textContent = `${hits} / ${mine.length} in`;
   if(r) document.getElementById("hLast").textContent = `${r.speedDpMs.toFixed(2)} speed · ${r.throwFt.toFixed(1)} ft · ${r.swipeAngleDeg>0?"+":""}${r.swipeAngleDeg}°`;
   document.getElementById("log").textContent = summary();
 }
@@ -275,7 +320,9 @@ function summary(){
 }
 function buildChips(){
   const el=document.getElementById("chips"); el.innerHTML="";
-  TARGETS.forEach((T,i)=>{ const b=document.createElement("button"); b.textContent=T.label.replace(" ft","′"); if(i===tIdx&&!randomMode) b.className="on"; b.onclick=()=>{ randomMode=false; tIdx=i; store.set("bs_tuner_target",i); buildChips(); updateHud(); }; el.appendChild(b); });
+  if (test){ const s=document.createElement("button"); s.textContent="Stop test"; s.onclick=()=>{ if(confirm("Stop the auto test? Throws so far are kept.")) stopTest(); }; el.appendChild(s); updateHud(); return; }
+  const at=document.createElement("button"); at.textContent="Auto test (100)"; at.className="on"; at.onclick=startTest; el.appendChild(at);
+  TARGETS.slice(0,5).forEach((T,i)=>{ const b=document.createElement("button"); b.textContent=T.label.replace(" ft","′"); if(i===tIdx&&!randomMode) b.className="on"; b.onclick=()=>{ randomMode=false; tIdx=i; store.set("bs_tuner_target",i); buildChips(); updateHud(); }; el.appendChild(b); });
   const rnd=document.createElement("button"); rnd.textContent="Random"; if(randomMode) rnd.className="on"; rnd.onclick=()=>{ randomMode=!randomMode; buildChips(); }; el.appendChild(rnd);
   const st=document.createElement("button"); st.textContent="Settings"; st.onclick=()=>document.getElementById("panel").classList.toggle("open"); el.appendChild(st);
   updateHud();
@@ -303,6 +350,15 @@ document.getElementById("bDone").onclick=closePanel;
 function closePanel(){ document.getElementById("panel").classList.remove("open"); }
 // tapping the scene above the panel closes it
 stage.addEventListener("pointerdown",()=>{ const pn=document.getElementById("panel"); if(pn.classList.contains("open")) closePanel(); }, true);
+function showResults(done){
+  const sess = throws.filter(t=>t.test && t.test.session===done.session && !t.test.warmup);
+  const rows = PROFILES.map(p=>{ const m=sess.filter(t=>t.test.profile===p.id); const h=m.filter(t=>t.hit).length;
+    const ml = m.length? m.reduce((a,t)=>a+Math.abs(t.longFt),0)/m.length : 0; return {p, n:m.length, h, ml}; }).sort((a,b)=>b.h-a.h||a.ml-b.ml);
+  const lines = rows.map((r,i)=>`${i+1}. Feel ${r.p.id}: ${r.h}/${r.n} in · avg distance miss ${r.ml.toFixed(1)} ft`);
+  document.getElementById("log").textContent = "AUTO TEST DONE (warm-ups excluded)\n"+lines.join("\n")+"\n\nTap Share data file and send it to JARVIS.";
+  document.getElementById("panel").classList.add("open");
+}
+if (test){ applyTest(); }
 buildChips(); buildSliders(); updateHud();
 </script>
 </body>
