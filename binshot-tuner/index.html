@@ -12,11 +12,11 @@
   canvas { display:block; width:100%; height:100%; }
   .hud { position:fixed; left:8px; right:8px; top:8px; display:flex; gap:6px; flex-wrap:wrap; pointer-events:none; }
   .card { background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:12px; padding:6px 10px; font-weight:600; box-shadow:2px 2px 0 var(--ink); }
-  .chips { position:fixed; left:8px; right:8px; bottom:8px; display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
+  .chips { position:fixed; left:8px; right:8px; top:56px; display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
   button { font:inherit; font-weight:700; background:var(--paper); color:var(--ink); border:2px solid var(--ink); border-radius:999px; padding:8px 12px; box-shadow:2px 2px 0 var(--ink); }
   button.on { background:var(--accent); color:#fff; }
   #result { position:fixed; left:0; right:0; top:42%; text-align:center; font-size:30px; font-weight:900; color:#fff; text-shadow:0 2px 0 #000,0 0 8px #000; pointer-events:none; }
-  #panel { position:fixed; left:0; right:0; bottom:0; max-height:72%; overflow:auto; background:var(--paper); color:var(--ink); border-top:3px solid var(--ink); padding:12px 14px 80px; transform:translateY(100%); transition:transform .2s; }
+  #panel { position:fixed; left:0; right:0; bottom:0; max-height:62%; overflow:auto; background:var(--paper); color:var(--ink); border-top:3px solid var(--ink); padding:0 14px 40px; z-index:5; transform:translateY(100%); transition:transform .2s; }
   #panel.open { transform:none; }
   .row { margin:10px 0; }
   .row label { display:flex; justify-content:space-between; font-weight:700; }
@@ -36,7 +36,7 @@
 <div id="result"></div>
 <div class="chips" id="chips"></div>
 <div id="panel">
-  <h3 style="margin:4px 0">Adjust the feel</h3>
+  <div style="position:sticky;top:0;background:var(--paper);padding:10px 0 6px;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #e4d6c2;z-index:2"><h3 style="margin:0">Adjust the feel</h3><button id="bDone" class="on">Done</button></div>
   <small>Change one slider at a time, then throw 5 to 10 times. Settings are saved on this phone.</small>
   <div id="sliders"></div>
   <div class="btnrow">
@@ -87,7 +87,7 @@ const TARGETS = [
 let tIdx = store.get("bs_tuner_target", 1);
 let randomMode = false;
 const RIM_Y = 0.40;               // rim height (m), ~16 in bin
-const START = { x:0, y:1.05, z:0.35 }; // hand
+const START = { x:0, y:1.0, z:0.2 }; // hand, low in the frame like the game
 const G = 9.81;
 
 // ---------- camera ----------
@@ -235,7 +235,7 @@ function binFront(T,R,highlight){ // outer wall and near rim, drawn after a ball
   ellipse(T.x,RIM_Y,T.z,R,Math.PI,2*Math.PI,highlight?"#ffd25a":"#e9f6ff",null,5); // near rim, bright so the hole reads
   ellipse(T.x,RIM_Y,T.z,R,Math.PI,2*Math.PI,"#111",null,1.5);
 }
-function drawBall(p, r){ const s=proj(p.x,p.y,p.z); if(!s) return; const rad=Math.max(s.s*0.045,3);
+function drawBall(p, r){ const s=proj(p.x,p.y,p.z); if(!s) return; const rad=Math.max(Math.min(s.s*0.045, W*0.075),3);
   ctx.beginPath(); ctx.arc(s.x,s.y,rad,0,7); ctx.fillStyle="#f4f1ea"; ctx.fill(); ctx.lineWidth=Math.max(1.5,rad*0.18); ctx.strokeStyle="#111"; ctx.stroke();
   ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(s.x-rad*.5,s.y-rad*.2); ctx.lineTo(s.x+rad*.3,s.y+rad*.4); ctx.moveTo(s.x-rad*.1,s.y-rad*.6); ctx.lineTo(s.x+rad*.5,s.y-rad*.1); ctx.stroke();
 }
@@ -288,7 +288,6 @@ function buildSliders(){
     row.querySelector("input").oninput=e=>{ P[k]=+e.target.value; document.getElementById("v_"+k).textContent=P[k]; store.set("bs_tuner_params",P); };
     box.appendChild(row);
   }
-  const close=document.createElement("button"); close.textContent="Done"; close.onclick=()=>document.getElementById("panel").classList.remove("open"); box.appendChild(close);
 }
 function payload(){ return JSON.stringify({ tool:"binshot-swipe-tuner", version:1, exported:new Date().toISOString(), ua:navigator.userAgent, currentParams:P, defaults:DEFAULTS, throws }, null, 1); }
 document.getElementById("bReset").onclick=()=>{ P={...DEFAULTS}; store.set("bs_tuner_params",P); buildSliders(); };
@@ -300,6 +299,10 @@ document.getElementById("bShare").onclick=async()=>{
   if (navigator.canShare && navigator.canShare({files:[file]})) { try{ await navigator.share({files:[file], title:"Bin Shot tuner data"}); return; }catch(e){ if(e.name==="AbortError") return; } }
   const a=document.createElement("a"); a.href=URL.createObjectURL(file); a.download=name; a.click();
 };
+document.getElementById("bDone").onclick=closePanel;
+function closePanel(){ document.getElementById("panel").classList.remove("open"); }
+// tapping the scene above the panel closes it
+stage.addEventListener("pointerdown",()=>{ const pn=document.getElementById("panel"); if(pn.classList.contains("open")) closePanel(); }, true);
 buildChips(); buildSliders(); updateHud();
 </script>
 </body>
