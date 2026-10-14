@@ -27,9 +27,10 @@
 <ul>
 <li>Playing alone, playing pass and play on one phone, and sharing challenge links send nothing to us.</li>
 <li>If you play a live room with a friend, your display name, your chosen character, your throws and a random ID for your copy of the game go to our room server while the room is open. When the room closes, it is all gone. We keep nothing.</li>
+<li>Every player is on the public leaderboard: your leaderboard name (your 2-player name or a generated one like "Swift Falcon 482", which you can change), your character, your scores and a random ID for your copy of the game are stored on our server and shown on the public boards until you remove yourself in Settings.</li>
 <li>No accounts. No sign-in. We never ask for your real name, email address or phone number.</li>
 <li>No analytics, no tracking and no crash reporting.</li>
-<li>We do not sell or share personal data. The only server we run is the live room server, and it does not save anything.</li>
+<li>We do not sell or share personal data. Our one server runs live rooms (which save nothing) and the leaderboard (which saves only what is described below).</li>
 <li>Purchases are processed by Google Play. We never see your payment details.</li>
 </ul>
 <h2>What the game keeps, and where</h2>
@@ -42,7 +43,7 @@
 <li>whether the full game and the Supporter Pack are unlocked on this phone, so they work offline</li>
 <li>the display name you choose for 2-player games, and a random ID the game makes for itself so you can rejoin a live room</li>
 </ul>
-<p>None of this is sent to us, except as described under Live rooms below. Uninstalling the game or clearing its data in Android settings deletes it from the phone.</p>
+<p>None of this is sent to us, except as described under Live rooms and Leaderboard below. Uninstalling the game or clearing its data in Android settings deletes it from the phone.</p>
 <h2>Android backup</h2>
 <p>If backup is turned on for your phone, Android includes the game's save in your phone's normal backup to your own Google account, so a new phone can bring your progress back. Android does this, not the game, and we cannot see these backups. You can turn backup off in your phone's settings.</p>
 <h2>Save codes</h2>
@@ -59,16 +60,28 @@
 <p>Your display name, character and throws are shown to the other player in your room. The server holds this only in memory while the room is open. It does not write it to a database or a file, and it does not log names or throws. A room closes when the players leave, when the player who opened it leaves, or after 15 minutes with no activity, and everything about it is deleted at that moment. There are no accounts.</p>
 <p>The server is hosted by Railway. Like any website, the connection uses your internet (IP) address. The room server uses it only while you are connected, and for up to two minutes after, to limit abuse such as too many rooms opened at once. It does not store it.</p>
 <p>The random ID stays on your phone (and in your phone's backup, if backup is on) until you clear the game's data or uninstall it. It is not tied to your Google account or to any other app.</p>
+<h2>Leaderboard</h2>
+<p>PaperShot has public leaderboards for the furthest level reached, total stars and the Daily Shot. Every player is on them from the first launch, under their 2-player display name or, if they haven't set one, a generated name like "Swift Falcon 482". The game asks once if you want to keep that name or pick another, and you can change it any time in Settings.</p>
+<p>The game sends to our server, over an encrypted connection:</p>
+<ul>
+<li>your leaderboard name (we block offensive names)</li>
+<li>the character you play as, so your row shows their face</li>
+<li>your furthest level, which area of the map it is in, and your total stars</li>
+<li>your best Daily Shot score for each day you play it, with that day's date</li>
+<li>the random ID the game made for your copy of the game (the same one live rooms use), so your scores stay on one row</li>
+</ul>
+<p>The game sends your latest scores when it starts, after each level and after each Daily Shot. Your name, character and scores are shown to everyone who opens the leaderboard. The server keeps them in a database hosted by Railway until you remove them. Like any website, the connection uses your internet (IP) address; the server uses it only to limit abuse, such as too many requests at once, and does not store it.</p>
+<p>To remove yourself, open Settings and tap "Remove me from the leaderboard". That deletes your name, your scores and your Daily Shot results from our server straight away. Your progress on your phone stays. Settings can put you back on the boards. You can also email us to ask for removal.</p>
 <h2>Challenge links</h2>
 <p>You can challenge a friend by sharing a link or a code from the game. The challenge, including your display name, score and throws, is packed into the link itself, after the # sign, so it is never sent to our web page or server. It only goes to the people you choose to send it to, through the app you pick to share it.</p>
 <h2>Daily reminder</h2>
 <p>The daily reminder is off unless you turn it on. If you do, newer versions of Android ask for permission to show notifications, and the game schedules one notification a day on your phone at the time you pick. The reminder is set and shown entirely on your phone. Nothing is sent to us or anyone else. You can turn it off at any time in the game's settings.</p>
 <h2>Internet use</h2>
-<p>The game plays offline, except for live rooms. It connects to Google Play, on your phone, to check what has been bought and to handle purchases, and to our room server only while you are in a live room.</p>
+<p>The game plays offline, except for live rooms and the leaderboard. It connects to Google Play, on your phone, to check what has been bought and to handle purchases; to our server while you are in a live room; and, unless you removed yourself from the leaderboard, to send your scores and to show the boards. Offline, the leaderboard says so and everything else works the same.</p>
 <h2>Purchases and promo codes</h2>
 <p>The full game and the optional Supporter Pack are one-time purchases processed by Google Play under <a href="https://policies.google.com/privacy">Google's privacy policy</a>. The game only asks Google Play which of them have been bought on your Google account. We never receive your name, email address or payment details. Because the purchase is tied to your Google account, reinstalling the game or using another phone with the same account restores it. Promo codes are redeemed in the Google Play Store.</p>
 <h2>Children</h2>
-<p>PaperShot is not designed for children under 13, and we do not knowingly collect personal information from children. The only thing a player types is a short display name for 2-player games, which is shown to the other player and deleted when the live room closes.</p>
+<p>PaperShot is not designed for children under 13, and we do not knowingly collect personal information from children. The only things a player types are a short display name for 2-player games, which is shown to the other player and deleted when the live room closes, and a leaderboard name, which is shown on the public boards until the player removes it (a generated name is used otherwise).</p>
 <h2>Changes to this policy</h2>
 <p>If this policy changes, the new version will be posted at this address with a new effective date.</p>
 <h2>Contact</h2>
