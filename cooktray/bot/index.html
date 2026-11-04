@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CookTrayRecipeFinder</title>
+<style>
+  :root { --bg: #F5F4EF; --card: #FFFFFF; --line: #DCDAD0; --ink: #22251E; --muted: #5B5F53; --olive: #454B33; --accent: #F6C431; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16180F; --card: #21241A; --line: #363A2C; --ink: #F1F0E8; --muted: #B9BBAE; --olive: #CFD1BE; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 8px 0 8px; }
+  h2 { font-size: 21px; margin: 28px 0 6px; }
+  h3 { font-size: 18px; margin: 18px 0 4px; }
+  p, li, td { color: var(--muted); }
+  .tag { display: inline-block; background: var(--olive); color: var(--bg); border-radius: 999px; padding: 4px 12px; font-weight: 600; font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 15px; }
+  th { color: var(--ink); }
+  .wrap { overflow-x: auto; }
+  a { color: inherit; }
+  nav { margin-top: 32px; font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+<span class="tag">CookTray</span>
+<h1>CookTrayRecipeFinder</h1>
+<p>CookTrayRecipeFinder is the web reader behind the AI Recipe Finder in the CookTray app by VAVA Graphics, Charlotte, North Carolina.</p>
+<ul>
+<li>It runs only when a CookTray user asks for a recipe. It does not crawl, and it does not build an index.</li>
+<li>It identifies itself as <strong>CookTrayRecipeFinder/1.0</strong> and obeys robots.txt. Sites that disallow it, or that ban AI agents, are skipped.</li>
+<li>It never works around blocks, logins, paywalls or bot checks.</li>
+<li>It reads only the schema.org Recipe data a page publishes for search engines, then discards the page. It does not copy text, photos or stories.</li>
+<li>Results link back to the original page.</li>
+</ul>
+<p>To exclude your site, add this to your robots.txt, or email <a href="mailto:tristan@vavagraphics.com">tristan@vavagraphics.com</a> and we will add it to our exclusion list, usually within one business day:</p>
+
+<pre>User-agent: CookTrayRecipeFinder
+Disallow: /</pre>
+<nav><a href="../privacy/">Privacy Policy</a> &middot; <a href="../terms/">Terms of Service</a></nav>
+</main>
+</body>
+</html>
